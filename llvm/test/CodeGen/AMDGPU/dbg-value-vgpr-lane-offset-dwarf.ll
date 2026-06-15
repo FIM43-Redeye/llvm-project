@@ -1,10 +1,13 @@
 ; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -O0 -filetype=obj < %s -o %t.o
 ; RUN: llvm-dwarfdump --debug-info %t.o | FileCheck %s
 
-; Verify that divergent (VGPR) debug values produce valid DWARF with explicit
+; Verify that divergent (VGPR) debug values produce valid DWARF with
 ; lane-specific offset operations, and NOT DW_OP_LLVM_undefined.
-; This also verifies no double lane-offset application: the explicit PushLane
-; added by InstrEmitter must suppress the implicit one in DwarfExpression.
+;
+; For a single-register value the explicit PushLane added by InstrEmitter must
+; suppress the implicit one in DwarfExpression (no double application). For a
+; multi-register value the lane offset is applied to each register piece
+; independently (stride 4 = one VGPR lane), not once to the whole composite.
 
 ; --- i32 (single VGPR) ---
 ; CHECK:       DW_TAG_variable
@@ -14,26 +17,29 @@
 ; CHECK-SAME:  DW_OP_lit4
 ; CHECK-SAME:  DW_OP_mul
 ; CHECK-SAME:  DW_OP_LLVM_offset
-; Verify no double lane-offset (HasExplicitLaneOps must suppress implicit one).
+; Verify no double lane-offset (the per-operand guard must suppress implicit one).
 ; CHECK-NOT:   DW_OP_LLVM_push_lane
 ; CHECK-NOT:   DW_OP_LLVM_undefined
 ; CHECK:       DW_AT_name ("val")
 
 ; --- i64 (two VGPRs as DW_OP_piece composition) ---
-; Verify that multi-register values produce a piece-based composite location
-; with a single lane-offset applied to the entire composed value.
+; The lane offset is applied per register piece (each with stride 4), not once
+; to the composed value.
 ; CHECK:       DW_TAG_variable
 ; CHECK:       DW_AT_location
 ; CHECK-NEXT:  DW_OP_regx
-; CHECK-SAME:  DW_OP_piece 0x4
-; CHECK-SAME:  DW_OP_regx
-; CHECK-SAME:  DW_OP_piece 0x4
-; CHECK-SAME:  DW_OP_LLVM_piece_end
 ; CHECK-SAME:  DW_OP_LLVM_push_lane
-; CHECK-SAME:  DW_OP_lit8
+; CHECK-SAME:  DW_OP_lit4
 ; CHECK-SAME:  DW_OP_mul
 ; CHECK-SAME:  DW_OP_LLVM_offset
-; CHECK-NOT:   DW_OP_LLVM_push_lane
+; CHECK-SAME:  DW_OP_piece 0x4
+; CHECK-SAME:  DW_OP_regx
+; CHECK-SAME:  DW_OP_LLVM_push_lane
+; CHECK-SAME:  DW_OP_lit4
+; CHECK-SAME:  DW_OP_mul
+; CHECK-SAME:  DW_OP_LLVM_offset
+; CHECK-SAME:  DW_OP_piece 0x4
+; CHECK-SAME:  DW_OP_LLVM_piece_end
 ; CHECK-NOT:   DW_OP_LLVM_undefined
 ; CHECK:       DW_AT_name ("val64")
 

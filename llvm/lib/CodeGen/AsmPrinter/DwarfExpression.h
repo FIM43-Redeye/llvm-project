@@ -16,6 +16,7 @@
 #include "ByteStreamer.h"
 #include "DwarfDebug.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include <cassert>
@@ -372,11 +373,14 @@ public:
   bool IsPoisonedExpr = false;
   bool PermitDivergentAddrSpaceResult = false;
 
-  /// Set when the DIExpression contains explicit DIOp::PushLane operations.
-  /// When true, the implicit lane-offset injection in focusThreadIfRequired
-  /// (inside traverse(DIOp::Arg)) is suppressed to avoid double application.
-  /// Only meaningful during addExpression() execution; reset on entry and exit.
-  bool HasExplicitLaneOps = false;
+  /// Indices of DIOp::Arg location operands whose value already carries
+  /// explicit DIOp::PushLane operations in the expression. For these operands
+  /// the implicit lane-offset injection in focusThreadIfRequired (inside
+  /// traverse(DIOp::Arg)) is suppressed to avoid double application; operands
+  /// without explicit ops (e.g. multi-register values, which are only split
+  /// into per-register pieces here at emission) still get the implicit offset.
+  /// Only meaningful during addExpression() execution; cleared on entry/exit.
+  SmallDenseSet<unsigned, 2> ArgsWithExplicitLaneOps;
 
   /// Called if we're allowed to produce a stack entry whose address space
   /// diverges from the IR type the DIExpression produces.

@@ -779,11 +779,27 @@ void DwarfExpression::addExpression(DIExpression::NewElementsRef Expr,
   assert(!IsPoisonedExpr && "poisoned exprs should have old elements");
   this->ArgLocEntries = ArgLocEntries;
   this->TRI = TRI;
-  std::optional<DIOp::Fragment> FragOp;
-  HasExplicitLaneOps = false;
+  // Record which location operands already carry explicit DIOp::PushLane
+  // operations, so the implicit lane-offset injection can be suppressed per
+  // operand. InstrEmitter emits the explicit lane ops immediately after the
+  // operand's DIOpArg, so only a PushLane that directly follows a DIOpArg is
+  // treated as that operand's explicit lane offset. A PushLane used for some
+  // other purpose (not directly after a DIOpArg) is ignored here and does not
+  // suppress the implicit offset of an unrelated operand.
+  ArgsWithExplicitLaneOps.clear();
+  std::optional<unsigned> PrevArgIndex;
   for (DIOp::Variant Op : Expr) {
-    if (std::holds_alternative<DIOp::PushLane>(Op))
-      HasExplicitLaneOps = true;
+    if (auto *ArgOp = std::get_if<DIOp::Arg>(&Op)) {
+      PrevArgIndex = ArgOp->getIndex();
+      continue;
+    }
+    if (PrevArgIndex && std::holds_alternative<DIOp::PushLane>(Op))
+      ArgsWithExplicitLaneOps.insert(*PrevArgIndex);
+    PrevArgIndex = std::nullopt;
+  }
+
+  std::optional<DIOp::Fragment> FragOp;
+  for (DIOp::Variant Op : Expr) {
     if (auto *Frag = std::get_if<DIOp::Fragment>(&Op)) {
       FragOp = *Frag;
       IsFragment = true;
@@ -799,7 +815,7 @@ void DwarfExpression::addExpression(DIExpression::NewElementsRef Expr,
   if (!IsImplemented)
     emitUserOp(dwarf::DW_OP_LLVM_undefined);
   IsFragment = false;
-  HasExplicitLaneOps = false;
+  ArgsWithExplicitLaneOps.clear();
   ASTRoot.reset();
   this->TRI = nullptr;
   this->ArgLocEntries = {};
@@ -1020,11 +1036,14 @@ std::optional<NewOpResult> DwarfExpression::traverse(DIOp::Arg Arg,
     SubRegOffset /= 8;
     SubRegSize /= 8;
 
-    auto focusThreadIfRequired = [this](int64_t DwarfRegNo) {
-      // When the DIExpression already contains explicit DIOp::PushLane
-      // operations (inserted by InstrEmitter for divergent VGPR values),
-      // skip implicit lane-offset injection to avoid double application.
-      if (HasExplicitLaneOps)
+    unsigned ArgIndex = Arg.getIndex();
+    auto focusThreadIfRequired = [this, ArgIndex](int64_t DwarfRegNo) {
+      // Skip the implicit lane-offset injection when this operand already
+      // carries explicit DIOp::PushLane operations (inserted by InstrEmitter
+      // for single-register divergent VGPR values), to avoid double
+      // application. Operands without explicit ops (e.g. multi-register values,
+      // which are split into per-register pieces only here) still get it.
+      if (ArgsWithExplicitLaneOps.contains(ArgIndex))
         return;
       // FIXME: This should be represented in the DIExpression.
       if (auto LaneSize = TRI->getDwarfRegLaneSize(DwarfRegNo, false)) {
@@ -1064,7 +1083,7 @@ std::optional<NewOpResult> DwarfExpression::traverse(DIOp::Arg Arg,
         return std::nullopt;
       if (Reg.DwarfRegNo >= 0) {
         addReg(Reg.DwarfRegNo, Reg.Comment);
-        focusThreadIfRequired(Regs[0].DwarfRegNo);
+        focusThreadIfRequired(Reg.DwarfRegNo);
       }
       emitOp(dwarf::DW_OP_piece);
       emitUnsigned(Reg.SubRegSize / 8);

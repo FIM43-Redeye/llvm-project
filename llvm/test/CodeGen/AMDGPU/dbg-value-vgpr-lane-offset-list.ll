@@ -1,4 +1,6 @@
 ; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -O0 -stop-after=finalize-isel < %s | FileCheck %s
+; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -O0 -filetype=obj < %s -o %t.o
+; RUN: llvm-dwarfdump --debug-info %t.o | FileCheck %s --check-prefix=DWARF
 
 ; Test that DBG_VALUE_LIST instructions with multiple divergent operands
 ; get lane-specific byte offset operations added for EACH divergent arg.
@@ -39,13 +41,22 @@ entry:
   ret void, !dbg !27
 }
 
-; Test that two divergent operands with DIFFERENT strides (i32=4, i64=8)
-; get correct per-operand lane offset. Verifies the builder correctly
-; finds the second DIOpArg at its shifted position after inserting ops
-; for the first operand.
+; Test a mix of a single-register (i32) and a multi-register (i64) divergent
+; operand. Only the single-register operand (arg 0) gets explicit lane ops at
+; ISel; the multi-register i64 operand (arg 1) is left unchanged and handled
+; per-register at DWARF emission. This also verifies the builder finds the
+; first DIOpArg and inserts ops at the right position without disturbing arg 1.
 
 ; CHECK-LABEL: name: test_mixed_stride_list
-; CHECK: DBG_VALUE_LIST !{{[0-9]+}}, !DIExpression(DIOpArg(0, i32), DIOpPushLane(i32), DIOpConstant(i32 4), DIOpMul(), DIOpByteOffset(i32), DIOpZExt(i64), DIOpArg(1, i64), DIOpPushLane(i32), DIOpConstant(i32 8), DIOpMul(), DIOpByteOffset(i64), DIOpAdd())
+; CHECK: DBG_VALUE_LIST !{{[0-9]+}}, !DIExpression(DIOpArg(0, i32), DIOpPushLane(i32), DIOpConstant(i32 4), DIOpMul(), DIOpByteOffset(i32), DIOpZExt(i64), DIOpArg(1, i64), DIOpAdd())
+
+; In the final DWARF, the single-register operand's explicit lane ops must NOT
+; suppress the multi-register operand's per-register lane offset: the i64 value
+; must get one PushLane/offset per VGPR piece. The pattern below (a piece, then
+; another reg with its own push_lane/offset and piece, then piece_end) is
+; unique to the i64 composite and would be absent if the implicit per-register
+; offset were wrongly suppressed for this operand.
+; DWARF: DW_OP_piece 0x4, DW_OP_regx {{0x[0-9a-f]+}}, DW_OP_LLVM_user DW_OP_LLVM_push_lane, DW_OP_lit4, DW_OP_mul, DW_OP_LLVM_user DW_OP_LLVM_offset, DW_OP_piece 0x4, DW_OP_LLVM_user DW_OP_LLVM_piece_end
 
 define amdgpu_kernel void @test_mixed_stride_list(ptr addrspace(1) %out1, ptr addrspace(1) %out2) #0 !dbg !28 {
 entry:
@@ -97,7 +108,7 @@ attributes #1 = { nounwind readnone speculatable }
 !26 = !DILocation(line: 14, column: 1, scope: !17)
 !27 = !DILocation(line: 15, column: 1, scope: !17)
 
-; Function 3: test_mixed_stride_list (i32 stride=4, i64 stride=8)
+; Function 3: test_mixed_stride_list (single-register i32 + multi-register i64)
 !28 = distinct !DISubprogram(name: "test_mixed_stride_list", scope: !1, file: !1, line: 20, type: !6, isLocal: false, isDefinition: true, scopeLine: 20, flags: DIFlagPrototyped, isOptimized: false, unit: !0, retainedNodes: !29)
 !29 = !{!31}
 !30 = !DIBasicType(name: "long", size: 64, encoding: DW_ATE_signed)
