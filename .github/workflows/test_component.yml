@@ -146,41 +146,6 @@ jobs:
           echo "HSA_XNACK=1" >> $GITHUB_ENV
           echo "ASAN_SYMBOLIZER_PATH=${{ env.OUTPUT_ARTIFACTS_DIR }}/llvm/bin/llvm-symbolizer" >> $GITHUB_ENV
 
-      - name: Extend hipblas quick-suite timeout
-        if: ${{ fromJSON(inputs.component).job_name == 'hipblas' && fromJSON(inputs.component).test_type == 'quick' }}
-        run: |
-          python - <<'PY'
-          import pathlib
-          import re
-          import sys
-
-          ctest_file = pathlib.Path("build/bin/hipblas/CTestTestfile.cmake")
-          if not ctest_file.exists():
-              print(f"::warning::Skipping timeout update, file not found: {ctest_file}")
-              sys.exit(0)
-
-          text = ctest_file.read_text(encoding="utf-8")
-          pattern = re.compile(
-              r'(set_tests_properties\(\s*hipblas-test_quick_suite\s+PROPERTIES.*?TIMEOUT\s+")(\d+)(")',
-              re.DOTALL,
-          )
-          match = pattern.search(text)
-          if not match:
-              print("::warning::hipblas-test_quick_suite TIMEOUT property not found")
-              sys.exit(0)
-
-          original_timeout = match.group(2)
-          if original_timeout == "1800":
-              print("hipblas-test_quick_suite timeout already set to 1800 seconds")
-              sys.exit(0)
-
-          updated_text = pattern.sub(r"\g<1>1800\g<3>", text, count=1)
-          ctest_file.write_text(updated_text, encoding="utf-8")
-          print(
-              f"Updated hipblas-test_quick_suite timeout from {original_timeout} to 1800 seconds"
-          )
-          PY
-
       - name: Test
         id: test
         timeout-minutes: ${{ fromJSON(inputs.component).timeout_minutes }}
