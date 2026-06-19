@@ -1057,7 +1057,7 @@ AMDGPUCompiler::executeInProcessDriver(ArrayRef<const char *> Args) {
 
   ProcessWarningOptions(Diags, *DiagOpts, *OverlayFS, /*ReportDiags=*/false);
 
-  Driver TheDriver((Twine(env::getLLVMPath()) + "/bin/clang").str(),
+  Driver TheDriver(env::getClangBinaryPath(),
                    llvm::sys::getDefaultTargetTriple(), Diags,
                    "AMDGPU Code Object Manager", OverlayFS);
   TheDriver.setCheckInputsExist(false);
@@ -1481,10 +1481,7 @@ amd_comgr_status_t AMDGPUCompiler::outputResource(llvm::StringRef Path,
 }
 
 amd_comgr_status_t AMDGPUCompiler::addDeviceLibraries() {
-  SmallString<256> ClangBinaryPath(env::getLLVMPath());
-  sys::path::append(ClangBinaryPath, "bin", "clang");
-
-  std::string ClangResourceDir = GetResourcesPath(ClangBinaryPath);
+  std::string ClangResourceDir = GetResourcesPath(env::getClangBinaryPath());
 
   NoGpuLib = false;
 
@@ -2897,9 +2894,7 @@ AMDGPUCompiler::AMDGPUCompiler(DataAction *ActionInfo, DataSet *InSet,
       OverlayFS->pushOverlay(InMemoryFS);
     }
 
-    SmallString<256> ClangBinaryPath(env::getLLVMPath());
-    sys::path::append(ClangBinaryPath, "bin", "clang");
-    std::string ResourceDir = GetResourcesPath(ClangBinaryPath);
+    std::string ResourceDir = GetResourcesPath(env::getClangBinaryPath());
 
     // libc++ headers → <install>/include/c++/v1/<relative-path>
     SmallString<256> LibcxxBase(env::getLLVMPath());
