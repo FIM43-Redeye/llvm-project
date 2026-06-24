@@ -377,6 +377,21 @@ static bool shouldUseMmap(sys::fs::file_t FD,
   return false;
 #endif
 
+  // Do not use mmap on NFS file systems (IsVolatile is true).
+  // IsVolatile=true should be used on NFS file systems or when the files are
+  // expected to change (this happens on clangd when reading user's code).
+  // Otherwise, accessing the buffer obtained through mmap may result in a
+  // SIGBUS. Doing regular read() may result in "Stale file handle" errors,
+  // which is also not great, but at least `getOpenFileImpl` can forward the
+  // error to the user. In contrast, the SIGBUS happens on the caller's code and
+  // we cannot prevent it.
+  //
+  // FIXME: We could use the `CrashRecoveryContext`, and read one byte from
+  // every page of the file to catch the SIGBUS in advance. ATM I haven't
+  // managed to make this work, thus the conservative solution.
+  if (IsVolatile)
+    return false;
+
   // mmap may leave the buffer without null terminator if the file size changed
   // by the time the last page is mapped in, so avoid it if the file size is
   // likely to change.
