@@ -14,6 +14,8 @@ internally by the compiler. A thread that initiates one or more async operations
 
 - Most {ref}`DMA operations <amdgpu-dma-operations>` are asynchronous.
 
+(amdgpu-asyncmarks)=
+
 ## Asyncmarks
 
 An *asyncmark* created by a thread can be used to track async operations
@@ -32,9 +34,12 @@ Produces an asyncmark and appends it to the current sequence.
 Ensures that the length of the current sequence is at most `N` by removing
 asyncmarks from the start of the sequence if it is more than `N`.
 
-(amdgpu-asyncmark-memory-model)=
+See {ref}`amdgpu-dma-ordering` for details on how this operation can be used to
+establish a *synchronize-with* relation with a DMA operation.
 
-## Memory Model
+(amdgpu-asyncmark-completed-at)=
+
+## Completion
 
 An `asyncmark()` operation `X` that produces an asyncmark `M` is
 *completed-at* a `wait.asyncmark()` operation `Y` in the same function body
@@ -45,11 +50,12 @@ if:
   follows `Y` in *program-order*.
 
 Each dynamic instance `I` of an async *instruction* initiates a corresponding
-async *operation* `A` such that `I` *happens-before* `A`. Then `A`
-*happens-before* a `wait.asyncmark()` operation `Y` if there exists an
-`asyncmark()` operation `X` such that:
+async *operation* `A`.
 
-- `I` is *program-ordered* before `X`, and
+If `A` signals completion using asyncmarks, then `A` is *completed-at* a
+`wait.asyncmark()` operation `Y`:
+
+- `I` is *program-ordered* before an `asyncmark()` operation `X`, and
 - `X` is *completed-at* `Y`.
 
 ## Examples
