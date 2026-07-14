@@ -15,14 +15,14 @@ exposed to other threads. Even when they do need to be exposed, not all threads
 may need to observe these memory accesses. This document describes the *AMDGPU
 memory model* that allows the user to control how the side-effects of memory
 accesses are propagated across threads. The programmer expresses this using
-**new intrinsics and metadata** as described below, and the implementation can
-then choose a more efficient mechanism to complete them, such as the cache
-policy bits in an AMDGPU device.
+**new intrinsics, types and metadata** as described below, and the
+implementation can then choose a more efficient mechanism to complete them, such
+as the cache policy bits in an AMDGPU device.
 
 The AMDGPU memory model allows executions that are not allowed by the LLVM
 memory model. At the same time, a simple mapping can be used to implement these
-new intrinsics and metadata using operations defined in the default LLVM memory
-model. Thus, **there exists a safe-by-default implementation** that produces
+new intrinsics, types and metadata using operations defined in the default LLVM
+memory model. Thus, **there exists a safe-by-default implementation** that produces
 executions that are valid in both models.
 
 ## Terminology
@@ -72,8 +72,7 @@ The LLVM Language Reference defines the following {ref}`scopes<syncscope>`:
 
 ### AMDGPU scopes
 
-The AMDGPU backend further refines the LLVM scopes with the following
-target-defined scopes and constraints:
+The AMDGPU target defines the following LLVM scopes:
 
 - *system scope* (same as LLVM)
 - "agent" scope
@@ -85,19 +84,89 @@ target-defined scopes and constraints:
 These are arranged from largest scope (*system scope*) to smallest scope
 ("singlethread").
 
-- Every instance `X` of some scope `S1` other than "singlethread" scope is
-  partitioned by the scope `S2` one level below it. Each subset defined by this
-  partition is an instance of `S2` and is called a *subscope instance* of `X`.
-- It follows that if two scope instances `X` and `Y` intersect, then their
-  intersection is the smaller of `X` and `Y`.
-- A scope `S1` is a *subscope* of a scope `S2` if every instance of `S1`
-  is a subscope instance of some instance of `S2`.
+- Every scope `S1` other than *system scope* is a *subscope* of the scopes
+  above it in this linear arrangement.
+- If `S1` is a subscope of `S2`, then an instance `I1` of `S1` is a
+  subset of some instance `I2` of `S2`, and `I1` is said to be a
+  *subscope instance* of `I2`.
+- If two scope instances `I1` and `I2` intersect, then their intersection is
+  the smaller of `I1` and `I2`.
 
-**Inclusive Scopes**: Two operations `X` and `Y` are said to have *inclusive
+#### Containment
+
+Every operation *belongs to* an instance of a specific scope:
+
+- Operations executed by each thread (loads, stores, atomics, fences) *belong
+  to* the corresponding "singlethread" scope instance.
+- DMA operations *initiated by* each thread *belong to* an instance of the
+  corresponding {ref}`DMA scope<amdgpu-dma-scopes>`.
+
+Every operation is *contained* in the scope instance `I1` that it *belongs
+to*, as well as every scope instance `I2` such that `I1` is a *subscope
+instance* of `I2`.
+
+This affects how operations are related in *inclusive scopes* when determining
+availability and visibility. For example, DMA operations require
+{ref}`explicit availability and visibility<amdgpu-dma-visibility>`
+operations at scopes below the corresponding DMA scope.
+
+#### Inclusive Scopes
+
+Two operations `X` and `Y` are said to have *inclusive
 scopes* if the scope instance of each operation contains the other operation. In
 that case, the *common scope instance* `S'` of `X` and `Y` is the
 intersection of their scope instances. The scope corresponding to `S'` is also
 termed as the *common scope* of `X` and `Y`.
+
+(amdgpu-scope-type)=
+
+#### Scope Argument
+
+Several intrinsics accept a `scope` argument that identifies a scope
+instance. The scope argument can be passed in one of two ways:
+
+- `target("amdgcn.scope")` — A target extension type whose values are
+  opaque scope identifiers. Values of this type can only be produced by the
+  scope intrinsics listed below.
+- `metadata` **(deprecated)** — A metadata value containing either a scope
+  name string (e.g., `metadata !"workgroup"`) or a `ValueAsMetadata`
+  wrapping a scope value.
+
+New intrinsics accept only `target("amdgcn.scope")`. Deprecated intrinsics
+that accept `metadata` are documented alongside their replacements.
+
+The `target("amdgcn.scope")` type is opaque and token-like: a scope value may
+only flow directly from a producer intrinsic to a consumer intrinsic within a
+single function. It cannot be loaded from or stored to memory, passed as a
+function argument, returned from a function, or used in `phi` or `select`
+instructions.
+
+The following intrinsics return the AMDGPU LLVM scopes:
+
+```llvm
+target("amdgcn.scope") @llvm.amdgcn.scope.system()
+target("amdgcn.scope") @llvm.amdgcn.scope.agent()
+target("amdgcn.scope") @llvm.amdgcn.scope.cluster()
+target("amdgcn.scope") @llvm.amdgcn.scope.workgroup()
+target("amdgcn.scope") @llvm.amdgcn.scope.wavefront()
+target("amdgcn.scope") @llvm.amdgcn.scope.singlethread()
+```
+
+Additional scope intrinsics for {ref}`DMA scopes<amdgpu-dma-scopes>`:
+
+```llvm
+target("amdgcn.scope") @llvm.amdgcn.scope.lds.dma()
+target("amdgcn.scope") @llvm.amdgcn.scope.tensor.dma()
+```
+
+An example:
+
+```llvm
+%wg = call target("amdgcn.scope") @llvm.amdgcn.scope.workgroup()
+call void @llvm.amdgcn.make.available(target("amdgcn.scope") %wg)
+%dma = call target("amdgcn.scope") @llvm.amdgcn.scope.lds.dma()
+call void @llvm.amdgcn.make.available(target("amdgcn.scope") %dma)
+```
 
 ## Availability and Visibility
 
@@ -134,14 +203,22 @@ memory model, and can only be explained using the AMDGPU memory model.
 ### store-available
 
 ```llvm
-@llvm.amdgcn.av.global.store.b128(ptr, value, scope)
+@llvm.amdgcn.global.store.available.b128(ptr, value, target("amdgcn.scope"))
+@llvm.amdgcn.av.global.store.b128(ptr, value, scope)    ; (deprecated)
 store atomic [syncscope("<target-scope>")]
 atomicrmw    [syncscope("<target-scope>")]
 cmpxchg      [syncscope("<target-scope>")]
 ```
 
-The `@llvm.amdgcn.av.global.store.b128` intrinsic performs a non-atomic
-*store-available* operation on `ptr` with scope `scope`.
+The `@llvm.amdgcn.global.store.available.b128` intrinsic performs a non-atomic
+*store-available* operation on `ptr` with scope `scope` (see
+{ref}`amdgpu-scope-type`).
+
+:::{note}
+The deprecated `@llvm.amdgcn.av.global.store.b128` intrinsic accepts scope
+as a metadata argument. New code should use
+`@llvm.amdgcn.global.store.available.b128` instead.
+:::
 
 An atomic operation that results in a store operation is a *store-available*
 operation with scope `syncscope`.
@@ -151,14 +228,22 @@ operation with scope `syncscope`.
 ### load-visible
 
 ```llvm
-@llvm.amdgcn.av.global.load.b128(ptr, scope)
+@llvm.amdgcn.global.load.visible.b128(ptr, target("amdgcn.scope"))
+@llvm.amdgcn.av.global.load.b128(ptr, scope)             ; (deprecated)
 load atomic  [syncscope("<target-scope>")]
 atomicrmw    [syncscope("<target-scope>")]
 cmpxchg      [syncscope("<target-scope>")]
 ```
 
-The `@llvm.amdgcn.av.global.load.b128` intrinsic performs a non-atomic
-*load-visible* operation on `ptr` with scope `scope`.
+The `@llvm.amdgcn.global.load.visible.b128` intrinsic performs a non-atomic
+*load-visible* operation on `ptr` with scope `scope` (see
+{ref}`amdgpu-scope-type`).
+
+:::{note}
+The deprecated `@llvm.amdgcn.av.global.load.b128` intrinsic accepts scope
+as a metadata argument. New code should use
+`@llvm.amdgcn.global.load.visible.b128` instead.
+:::
 
 An atomic operation that results in a read operation is a *load-visible*
 operation with scope `syncscope`.
@@ -179,9 +264,40 @@ scope. A corresponding *load-visible* that does not access the same near
 cache will fail to observe this store.
 :::
 
+### MakeAvailable and MakeVisible
+
+#### make.available and make.visible
+
+```llvm
+@llvm.amdgcn.make.available(target("amdgcn.scope"))
+@llvm.amdgcn.make.visible(target("amdgcn.scope"))
+```
+
+`@llvm.amdgcn.make.available` is a `MakeAvailable` operation at scope
+`scope` (see {ref}`amdgpu-scope-type`). It makes all preceding writes
+available at that scope.
+
+`@llvm.amdgcn.make.visible` is a `MakeVisible` operation at scope
+`scope` (see {ref}`amdgpu-scope-type`). It makes writes that are
+available at that scope visible to subsequent reads.
+
+#### make.ptr.available and make.ptr.visible
+
+```llvm
+@llvm.amdgcn.make.ptr.available(ptr, target("amdgcn.scope"))
+@llvm.amdgcn.make.ptr.visible(ptr, target("amdgcn.scope"))
+```
+
+`@llvm.amdgcn.make.ptr.available` is an *availability operation* on
+preceding writes to `ptr` at scope `scope` (see {ref}`amdgpu-scope-type`).
+
+`@llvm.amdgcn.make.ptr.visible` is a *visibility operation* on `ptr` at
+scope `scope` (see {ref}`amdgpu-scope-type`). It makes writes to `ptr`
+that are available at that scope visible to subsequent reads.
+
 (amdgpu-av-metadata)=
 
-### AV Metadata
+#### AV Metadata
 
 ```llvm
 !mmra !{!"amdgcn-av", !"none"}
@@ -196,7 +312,7 @@ release` or `load atomic acquire`), the metadata does not affect the
 availability or the visibility of the access performed by the operation itself.
 It only affects the synchronization of other memory accesses.
 
-### MakeAvailable and MakeVisible
+#### Synchronizing Operations
 
 ```llvm
 store atomic [syncscope("<target-scope>")] <ordering> [, !mmra !{!"amdgcn-av", !"none"}]
@@ -277,6 +393,8 @@ and one of the following holds:
 
   Then `Y` makes `W` visible in the intersection `S` of `S1` and `S2`,
   and every subscope instance of `S` that includes `Y`.
+
+(amdgpu-location-order)=
 
 ### Location Order
 
